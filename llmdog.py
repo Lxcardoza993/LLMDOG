@@ -204,6 +204,25 @@ def llm_confirm(svc, plan, diag):
     d = _extract_json(txt)
     return bool(d and d.get('approve') is True)
 
+
+def build_fixed_plan(svc):
+    """fixed_rule 快路径:固定动作构造 plan。
+
+    前缀契约(2026-07-31 tgbot_verify 被自家护栏拦截 4h 的教训):
+    - action_cmd 必须剥掉 builtin:/shell: 前缀——guardrails 的 wl_norm 是无前缀集合,
+      带前缀比较永远不匹配;execute() 靠 action_type 分发,不依赖前缀。
+    - rollback_cmd 保留原前缀——护栏特例认 'builtin:noop'(剥成裸 'noop' 反而
+      过不了动作词校验),rollback() 执行端兼容 带前缀/裸 三种形式。
+    """
+    fixed = svc.get('fixed_action', '')
+    rb = svc.get('rollback', [''])
+    return {
+        'action_type': 'builtin' if fixed.startswith('builtin:') else 'shell',
+        'action_cmd': fixed.split(':', 1)[1] if re.match(r'^(builtin|shell):', fixed) else fixed,
+        'rollback_cmd': (rb[0] if rb else ''),
+        'risk': 'low', 'root_cause': 'fixed_rule',
+    }
+
 # ---------- 四道护栏 ----------
 BLACK = ['rm -rf', 'force push', '--force', 'git push -f', 'drop table',
          'delete from', 'workflow', '.github/', 'config.yaml', 'cpa/config',
@@ -390,8 +409,10 @@ def _learn_bug(svc, plan, diag, success):
                     except Exception:
                         learned = {}
                 lsvc = learned.setdefault(name, {'known_issues': [], 'whitelist': []})
-                existing = [i.get('name') for i in lsvc.get('known_issues', []) if isinstance(i, dict)]
-                if issue.get('name') not in existing:
+                # 去重键用 root_cause 稳定签名,不用 LLM 生成的 name(不稳定:同 bug 可能给出 "memory unavailable stuck" / "memory stuck" 不同短名 → 重复 append+重复 notify)
+                issue_sig = _bug_sig(name, issue.get('root_cause', ''))
+                existing_sigs = [_bug_sig(name, i.get('root_cause', '')) for i in lsvc.get('known_issues', []) if isinstance(i, dict) and i.get('root_cause')]
+                if issue_sig not in existing_sigs:
                     lsvc['known_issues'].append(issue)
                     fa = issue.get('fix_action', '')
                     # fix_action 是 builtin 安全 且 非现有 whitelist → 加 whitelist_learned(shell 不自动加防误伤)
@@ -400,8 +421,11 @@ def _learn_bug(svc, plan, diag, success):
                         lsvc['whitelist'].append(fa)
                     yaml.dump(learned, open(LEARNED_YAML, 'w', encoding='utf-8'),
                               allow_unicode=True, sort_keys=False)
-                    notify(f'🧠 llmdog 学了新 bug(已加监控自愈): {name} - {issue.get("name","")}\n'
-                           f'修法: {fa}\n严重度: {issue.get("severity")}')
+                    # notify 去重:同一 bug 签名只发一次 TG(防 LLM name 漂移导致重复通知)
+                    if not b.get('notified'):
+                        notify(f'🧠 llmdog 学了新 bug(已加监控自愈): {name} - {issue.get("name","")}\n'
+                               f'修法: {fa}\n严重度: {issue.get("severity")}')
+                        b['notified'] = True
                 b['learned'] = True
             else:
                 b['learned'] = True
@@ -462,14 +486,7 @@ def main():
             continue
         if mode == 'fixed_rule':
             # 根因明确的快路径:固定动作
-            fixed = svc.get('fixed_action', '')
-            rb = svc.get('rollback', [''])
-            plan = {
-                'action_type': 'builtin' if fixed.startswith('builtin:') else 'shell',
-                'action_cmd': fixed.split(':', 1)[1] if fixed.startswith('builtin:') else fixed,
-                'rollback_cmd': (rb[0].split(':', 1)[1] if rb and rb[0].startswith(('builtin:', 'shell:')) else (rb[0] if rb else '')),
-                'risk': 'low', 'root_cause': 'fixed_rule'
-            }
+            plan = build_fixed_plan(svc)
         else:
             plan = llm_analyze(svc, diag)
             if not plan:
