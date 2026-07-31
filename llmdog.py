@@ -224,6 +224,34 @@ def build_fixed_plan(svc):
         'risk': 'low', 'root_cause': 'fixed_rule',
     }
 
+def known_issue_fallback(svc):
+    """LLM 不可用时的已知病快路径:known_issues 里找 fix_action 剥前缀后在白名单的条目。
+
+    动机:监控对象=LLM 提供方本身时(CPA 卡死=8317 挂),llm_analyze 必瘫痪只能
+    告警'需人工'(2026-08-01 00:27/00:38 两次,而后 CPA 自愈)。known_issues 的
+    fix_action 是人工/历史验证过的对症药,白名单即预授权,LLM 不在也能用。
+    """
+    wl = svc.get('whitelist', [])
+    wl_norm = [w.split(':', 1)[1] if re.match(r'^(builtin|shell):', w) else w for w in wl]
+    for ki in svc.get('known_issues', []) or []:
+        if not isinstance(ki, dict):
+            continue
+        fa = ki.get('fix_action', '') or ''
+        if not fa:
+            continue
+        bare = fa.split(':', 1)[1] if re.match(r'^(builtin|shell):', fa) else fa
+        if bare in wl_norm:
+            rb = svc.get('rollback', ['builtin:noop'])
+            return {
+                'action_type': 'builtin' if fa.startswith('builtin:') else 'shell',
+                'action_cmd': bare,
+                'rollback_cmd': (rb[0] if rb else 'builtin:noop'),
+                'risk': 'low',
+                'root_cause': f"known_issue: {ki.get('name', '')}",
+                '_no_confirm': True,  # LLM 已不可用,二次确认必失败,跳过(同 fixed_rule)
+            }
+    return None
+
 # ---------- 四道护栏 ----------
 BLACK = ['rm -rf', 'force push', '--force', 'git push -f', 'drop table',
          'delete from', 'workflow', '.github/', 'config.yaml', 'cpa/config',
@@ -508,11 +536,17 @@ def main():
         else:
             plan = llm_analyze(svc, diag)
             if not plan:
-                notify(f'⚠️ {name}: 探活连续失败 {st["fail_count"]} 次,LLM(8317)不可用,需人工。\n诊断:\n{diag[:1500]}')
+                # LLM 不可用 → 已知病快路径(典型:CPA 卡死=8317 自己挂,llm_analyze 必瘫痪)
+                plan = known_issue_fallback(svc)
+            if not plan:
+                notify(f'⚠️ {name}: 探活连续失败 {st["fail_count"]} 次,LLM(8317)不可用且无对症 known_issue,需人工。\n诊断:\n{diag[:1500]}')
                 st['last_fix'] = now
                 continue
-        # 二次确认(fixed_rule 跳过)
-        if mode != 'fixed_rule' and not llm_confirm(svc, plan, diag):
+            if plan.get('_no_confirm'):
+                log('FALLBACK', name, action=plan.get('action_cmd'),
+                    root_cause=str(plan.get('root_cause', ''))[:120])
+        # 二次确认(fixed_rule 跳过;LLM 不可用的 known_issue fallback 也跳过——确认必失败)
+        if mode != 'fixed_rule' and not plan.get('_no_confirm') and not llm_confirm(svc, plan, diag):
             notify(f'⚠️ {name}: LLM 二次确认未通过,方案:{plan.get("action_cmd")},需人工。')
             st['last_fix'] = now
             continue

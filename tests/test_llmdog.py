@@ -290,3 +290,54 @@ def test_main_llm_unavailable_fallback(tmp_paths, monkeypatch):
     monkeypatch.setattr(llmdog, 'notify', lambda m: notified.append(m))
     llmdog.main()
     assert any('LLM' in n and '不可用' in n for n in notified)
+
+
+# ============ known_issue_fallback(LLM 不可用的已知病快路径)============
+def test_known_issue_fallback_whitelisted(tmp_paths):
+    """fix_action 剥前缀后在白名单 → 出 plan,且能过四道护栏。"""
+    svc = {'name': 'cpa',
+           'whitelist': ['builtin:kill_main_pid(cli-proxy-api.service)'],
+           'rollback': ['builtin:noop'],
+           'known_issues': [{'name': 'mem stuck',
+                             'fix_action': 'builtin:kill_main_pid(cli-proxy-api.service)'}]}
+    plan = llmdog.known_issue_fallback(svc)
+    assert plan and plan['action_cmd'] == 'kill_main_pid(cli-proxy-api.service)'
+    assert plan['action_type'] == 'builtin'
+    ok, why = llmdog.guardrails(svc, plan)
+    assert ok, why
+
+
+def test_known_issue_fallback_not_whitelisted(tmp_paths):
+    """fix_action 不在白名单 → None(白名单=人工预授权,超纲不动)。"""
+    svc = {'name': 'cpa', 'whitelist': ['builtin:noop'],
+           'known_issues': [{'name': 'x', 'fix_action': 'shell:rm -rf /tmp/x'}]}
+    assert llmdog.known_issue_fallback(svc) is None
+
+
+def test_main_llm_down_known_issue_executes(tmp_paths, monkeypatch):
+    """LLM 不可用但 known_issues 有白名单内对症动作 → 直接执行不再只告警。
+    2026-08-01 00:27/00:38 实战:CPA 卡死=8317 自己挂,llm_analyze 瘫痪两次'需人工'。"""
+    monkeypatch.setattr(llmdog, 'call_llm', lambda p, timeout=60: None)
+    _write_svc(tmp_paths, {'name': 'cpa', 'probe': {'cmd': 'false'},
+              'fail_threshold': 1, 'cooldown_min': 0, 'mode': 'llm_analyze',
+              'verify_wait': 0, 'diagnostics': ['true'],
+              'whitelist': ['builtin:kill_main_pid(x.service)'],
+              'rollback': ['builtin:noop'],
+              'known_issues': [{'name': 'mem stuck',
+                                'fix_action': 'builtin:kill_main_pid(x.service)'}]}, monkeypatch)
+    executed = []
+    monkeypatch.setattr(llmdog, 'execute',
+                        lambda plan: executed.append(plan['action_cmd']) or (0, 'ok'))
+    notified = []
+    monkeypatch.setattr(llmdog, 'notify', lambda m: notified.append(m))
+    calls = {'n': 0}
+
+    def fake_probe(svc):
+        calls['n'] += 1
+        return (calls['n'] > 1), 'ok'  # 首次死(触发),复查活(修复成功)
+
+    monkeypatch.setattr(llmdog, 'probe', fake_probe)
+    llmdog.main()
+    assert executed == ['kill_main_pid(x.service)']  # 走了 fallback 真执行
+    assert any('修复成功' in n for n in notified)
+    assert not any('不可用' in n for n in notified)  # 不再只告警需人工
