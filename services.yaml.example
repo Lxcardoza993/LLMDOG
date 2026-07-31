@@ -20,7 +20,7 @@ services:
   # ============ 示例1: LLM 中转站(CPA类)——探活要真调推理才能抓"假活" ============
   - name: my_llm_proxy
     probe:
-      url: http://127.0.0.1:8317/v1/messages
+      url: http://127.0.0.1:8080/v1/messages
       method: POST
       headers:
         Authorization: "Bearer <YOUR_CPA_KEY>"
@@ -35,7 +35,7 @@ services:
     diagnostics:
       - "systemctl status my-llm-proxy.service --no-pager -l"
       - "journalctl -u my-llm-proxy.service -n 80 --no-pager"
-      - "curl -s --max-time 5 -H 'Authorization: Bearer <YOUR_CPA_KEY>' http://127.0.0.1:8317/v1/models | head -c 500"
+      - "curl -s --max-time 5 -H 'Authorization: Bearer <YOUR_CPA_KEY>' http://127.0.0.1:8080/v1/models | head -c 500"
       - "ps -ef | grep my-llm-proxy | grep -v grep"
     whitelist:
       # builtin:kill_main_pid = SIGTERM 5s 后 SIGKILL(属主你不用sudo);systemd Restart=always 自拉回

@@ -1,0 +1,18 @@
+# 场景:HTTP WebUI 服务只告警不自愈
+# 用于:(1) 无写权限的服务 (2) 与其他看门狗职责重叠(避免双重操作)
+# 只探活 + 发 TG 告警,不调 LLM、不执行修复。
+services:
+  - name: webui
+    probe:
+      url: "http://127.0.0.1:8080/health"
+      ok_statuses: [200]       # 只 200 算活
+      bad_words: []            # 无坏词过滤
+    fail_threshold: 3          # 连续 3 次失败才告警(更宽容)
+    cooldown_min: 10
+    mode: alert                # ← 只告警,不自愈
+    diagnostics:
+      - "curl -sI http://127.0.0.1:8080/health"
+      - "systemctl --user status webui.service --no-pager"
+    whitelist: []              # alert 模式白名单留空
+    rollback: []
+    known_issues: []

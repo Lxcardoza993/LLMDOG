@@ -1,0 +1,27 @@
+# 场景:LLM 代理服务(本机 LLM gateway / 中转站)自愈
+# 探活走直连 LLM 端口(不走外部代理,防代理挂时看门狗也瞎);失败→LLM 分析→
+# builtin kill 主进程,systemd Restart=always 自动拉回。rollback 用 builtin:noop(交给 systemd)。
+services:
+  - name: llm_proxy
+    probe:
+      url: "http://127.0.0.1:8080/v1/models"
+      # 防"假 200":503 错误体塞进 200 body 时,这些词出现算失败
+      bad_words:
+        - "auth_unavailable"
+        - "no auth available"
+        - '"type":"error"'
+        - "unauthorized"
+    fail_threshold: 2          # 连续 2 次失败才触发(容忍偶发抖动)
+    cooldown_min: 5            # 修复后 5 分钟内不再重复修(防抖)
+    mode: llm_analyze          # LLM 驱动修复
+    diagnostics:
+      - "systemctl --user status my-llm-proxy.service --no-pager"
+      - "journalctl --user -u my-llm-proxy.service -n 30 --no-pager"
+      - "curl -s http://127.0.0.1:8080/v1/models | head -c 200"
+    # 白名单只允许 builtin: 动作(永不允许 LLM 自由拼 shell 命令)
+    whitelist:
+      - "builtin:kill_main_pid(my-llm-proxy.service)"
+    rollback:
+      - "builtin:noop"        # kill 后 systemd Restart=always 自动拉回
+    known_issues:
+      - "内存级卡死:改 config 不清(fsnotify 死),kill 主进程才清"

@@ -1,0 +1,19 @@
+# 场景:Docker 容器探活(shell 命令探活 + 只告警)
+# 探活用 shell 命令而非 HTTP(很多容器没暴露 HTTP 探活端口)。
+# alert 模式:只告警,容器重启交给 Docker restart policy / 看门狗脚本。
+services:
+  - name: app_container
+    probe:
+      # cmd 分支:命令 exit 0 = 活,非 0 = 死
+      cmd: "docker ps --filter name=^/app$ --filter status=running -q | grep -q ."
+    fail_threshold: 2
+    cooldown_min: 3
+    mode: alert
+    diagnostics:
+      - "docker ps -a --filter name=^/app$"
+      - "docker logs --tail 30 app 2>&1"
+      - "docker inspect app --format '{{.State.Status}} restarts={{.RestartCount}}'"
+    whitelist: []
+    rollback: []
+    known_issues:
+      - "WSL2 下 docker daemon 偶发 rtnetlink hang:wsl --shutdown + 重启 Docker Desktop"

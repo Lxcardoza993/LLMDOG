@@ -54,7 +54,7 @@ llmdog/
 ```yaml
 - name: my_service
   probe:                       # 探活:HTTP url 或 cmd shell
-    url: http://127.0.0.1:8317/v1/messages   # 或 cmd: "docker info --format ..."
+    url: http://127.0.0.1:8080/v1/messages   # 或 cmd: "docker info --format ..."
     method: POST
     headers: {Authorization: "Bearer <YOUR_KEY>"}
     body: '...'

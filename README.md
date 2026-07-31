@@ -9,6 +9,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
 [![default: DRY_RUN](https://img.shields.io/badge/default-DRY__RUN-orange.svg)](#-dry_run-安全模式)
+[![CI](https://github.com/Lxcardoza993/LLMDOG/actions/workflows/ci.yml/badge.svg)](https://github.com/Lxcardoza993/LLMDOG/actions/workflows/ci.yml)
+[![tests: 26](https://img.shields.io/badge/tests-26_passing-9cf.svg)](tests/)
+[![coverage: 71%](https://img.shields.io/badge/coverage-71%25-green.svg)](tests/)
 
 **English** · [中文文档](#-中文文档)
 
@@ -26,6 +29,30 @@
 - 🔒 **DRY_RUN by default** — analyzes + fake-executes, touches nothing real until you're confident.
 
 ## 🏗 How it works
+
+> Mermaid version (GitHub renders it natively):
+
+```mermaid
+flowchart TD
+  P[probe: HTTP url or shell cmd] -->|ok| C[clear counter, done]
+  P -->|fail| F[count+1, reach threshold?]
+  F -->|no| L[log, done]
+  F -->|yes| CD[collect diagnostics: logs/systemctl/ps/curl]
+  CD --> M{mode?}
+  M -->|alert| TG1[TG alert, done]
+  M -->|llm_analyze| A[LLM analyze → plan JSON]
+  A --> CF[second LLM confirm]
+  CF -->|fail| TG1
+  CF -->|pass| G[four guardrails]
+  G -->|fail| TG1
+  G -->|pass| D{DRY_RUN?}
+  D -->|yes| NP[log plan, done - no-op]
+  D -->|no| EX[execute → sleep 8s → re-probe]
+  EX -->|ok| TG2[TG 'fixed' + clear counter + LEARN BUG]
+  EX -->|fail| RB[rollback + TG 'needs human']
+```
+
+<details><summary>ASCII version (terminal-friendly)</summary>
 
 ```
  probe ──ok──▶ clear counter, done
@@ -54,6 +81,19 @@
    │ no
  rollback + TG "failed, rolled back, needs human"
 ```
+
+</details>
+
+### How it differs
+
+| | monit / systemd watchdog | runbook / PagerDuty | **LLMDOG** |
+|---|---|---|---|
+| Detect | ✅ | ✅ | ✅ |
+| Diagnose | fixed rules | human reads logs | LLM reads logs |
+| Decide | static | human | LLM + 4 guardrails |
+| Act | restart only | human SSH | kill / restart / shell (whitelisted) |
+| Learn | ❌ | ❌ runbook updates | ✅ recurrent bugs → self-heal |
+| Wake you at 3am | ✅ | ✅ | tries not to |
 
 ## 📦 Install
 
@@ -84,12 +124,12 @@ python3 llmdog.py              # manual run
 
 ```bash
 LLMDOG_DRY_RUN=1                          # 1=analyze+fake-exec; 0=real fix
-LLMDOG_LLM_URL=http://127.0.0.1:8317/v1/messages  # your LLM proxy (direct, not via clash)
+LLMDOG_LLM_URL=http://127.0.0.1:8080/v1/messages  # your LLM proxy (direct, not via clash)
 LLMDOG_LLM_KEY=YOUR_KEY
 LLMDOG_LLM_MODEL=deepseek-v4-pro
 LLMDOG_TG_BOT_TOKEN=YOUR_TG_BOT_TOKEN     # leave empty = only log, no TG
 LLMDOG_TG_CHAT_ID=YOUR_CHAT_ID
-LLMDOG_TG_PROXY=http://127.0.0.1:8899     # telegram needs a proxy in CN
+LLMDOG_TG_PROXY=http://127.0.0.1:7890     # telegram needs a proxy in CN
 ```
 
 **`services.yaml`** (copy from `.example`, one entry per service):
@@ -98,7 +138,7 @@ LLMDOG_TG_PROXY=http://127.0.0.1:8899     # telegram needs a proxy in CN
 services:
   - name: my_llm_proxy
     probe:
-      url: http://127.0.0.1:8317/v1/messages
+      url: http://127.0.0.1:8080/v1/messages
       method: POST
       headers: {Authorization: "Bearer <YOUR_KEY>", anthropic-version: "2023-06-01"}
       body: '{"model":"glm-5.2","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
@@ -121,6 +161,8 @@ services:
 
 Edit `services.yaml` → next timer tick picks it up automatically (no restart). Edit `llmdog.py` → next tick uses the new code (oneshot re-reads each run).
 
+> See [`examples/`](examples/) for ready-made configs: LLM-proxy self-heal, HTTP-webui alert, Docker-container probing.
+
 ## 🛡 The four guardrails
 
 LLMDOG fixes things directly, but with four safety nets — set by the principle *"direct repair, but double-confirm / minimal-change / rollbackable, and the safety boundary need not be too strict"*:
@@ -139,6 +181,23 @@ Every *real* successful fix (not DRY_RUN) is recorded into `state/bugs.json` key
 ## 🔒 DRY_RUN 安全模式
 
 Default `LLMDOG_DRY_RUN=1`: llmdog probes + analyzes + fake-executes (logs the plan, touches nothing). When you've seen several successful dry-run plans *and* a real outage got the right plan, flip `LLMDOG_DRY_RUN=0` to enable real repair. Next timer tick picks it up — no restart needed.
+
+## ⚠️ Safety
+
+LLMDOG **executes system commands** (kills processes, may run whitelisted `shell:` actions). Before going live:
+
+1. **Leave `DRY_RUN=1` first.** Watch the logged plans for a few days across real outages. Only flip to `0` when plans are consistently right.
+2. **Whitelist only what you trust.** Prefer `builtin:` (kill_main_pid, noop). Only add `shell:` entries you'd type yourself.
+3. **Use `mode: alert`** for services you can't/shouldn't auto-fix, or that overlap with another watchdog (don't double-operate).
+4. **The four guardrails are the boundary, not a guarantee.** They block `rm -rf`/force-push/workflow/config edits and require rollback verbs — but review the LLM's plans in DRY_RUN before trusting them.
+
+## 🗺 Roadmap
+
+- [ ] structured JSON log output (for log aggregation)
+- [ ] Prometheus /metrics endpoint
+- [ ] more `builtin:` actions (docker restart, http webhook)
+- [ ] per-service cooldown history dashboard
+- [ ] multi-host federated mode
 
 ## 📄 License
 
