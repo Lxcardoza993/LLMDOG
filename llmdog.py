@@ -147,8 +147,10 @@ _LLM_BAD_WORDS = ('auth_unavailable', 'noauthavailable', '"type":"error"',
 def _call_one_llm(p, prompt, timeout):
     body = json.dumps({
         'model': p.get('model', LLM_MODEL),
-        # reasoning 模型(thinking 块)先吃 token,800 不够撑过推理会截断空回复;给 2000
-        'max_tokens': 2000,
+        # reasoning 模型(thinking 块)先吃 token;实测 2000 会被 thinking 烧光截断
+        # (2026-08-01 实证:deepseek-v4-pro/glm-5.2 复杂诊断 case 思考链超 2000,
+        # text 块为空 → NO_JSON)。给 4000;非 reasoning 模型输出完即停,不受影响。
+        'max_tokens': 4000,
         'messages': [{'role': 'user', 'content': prompt}]
     }).encode()
     req = urllib.request.Request(p['url'], data=body, headers={
