@@ -33,7 +33,10 @@ py-modules = ["llmdog"]
 line-length = 100
 
 [tool.ruff.lint]
-# 看门狗脚本允许紧凑单行风格(单行 if/分号);模块级 import 位置灵活(先加载 config.env)
+# 只开基础:pycodestyle 错误(E4/E7/E9)+ pyflakes 真bug(F)+ isort(I001)
+# 关掉 opinionated(B/SIM/PL/BLE)——看门狗脚本 catch-all 防崩、裸 open 是有意的 robustness 取向
+select = ["E4", "E7", "E9", "F", "I001"]
+# 看门狗脚本允许紧凑单行(单行 if/分号);模块级 import 位置灵活(先加载 config.env)
 ignore = ["E701", "E702", "E402", "E741"]
 
 [tool.pytest.ini_options]

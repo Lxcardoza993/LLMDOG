@@ -5,17 +5,17 @@
 # 默认 DRY_RUN=1(只分析+假执行不动真格);跑稳改 config.env LLMDOG_DRY_RUN=0 开自动
 # LLM 直连 8317 不走 clash 8899(防 clash 挂时看门狗也瞎)
 
-import os
-import sys
-import json
-import time
-import subprocess
 import fcntl
-import re
-import traceback
 import hashlib
-import urllib.request
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import traceback
 import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 
 try:
@@ -153,7 +153,7 @@ def call_llm(prompt, timeout=60):
 
 def _extract_json(txt):
     if not txt: return None
-    m = re.search(r'\{.*\}', txt, re.S)
+    m = re.search(r'\{.*\}', txt, re.DOTALL)
     if not m: return None
     try: return json.loads(m.group(0))
     except Exception: return None
@@ -254,7 +254,7 @@ def execute_builtin(cmd):
     m = re.match(r'kill_main_pid\((.+)\)', cmd)
     if m:
         unit = m.group(1).strip().strip('"').strip("'")
-        rc, outp = run(f"systemctl show {unit} -p MainPID --value")
+        _rc, outp = run(f"systemctl show {unit} -p MainPID --value")
         pid = outp.strip()
         if not pid or pid == '0':
             return 1, f'无 MainPID: {outp.strip()[:100]}'

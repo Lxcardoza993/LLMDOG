@@ -1,24 +1,26 @@
 """llmdog 核心逻辑测试:探活 / 四道护栏 / bug 学习循环 / 内置动作。"""
 import os
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-import llmdog
 import urllib.request
+
+import llmdog
 
 
 # ============ probe ============
 def test_probe_cmd_success():
-    ok, d = llmdog.probe({'probe': {'cmd': 'true'}})
+    ok, _d = llmdog.probe({'probe': {'cmd': 'true'}})
     assert ok is True
 
 
 def test_probe_cmd_fail():
-    ok, d = llmdog.probe({'probe': {'cmd': 'false'}})
+    ok, _d = llmdog.probe({'probe': {'cmd': 'false'}})
     assert ok is False
 
 
 def test_probe_cmd_timeout():
-    ok, d = llmdog.probe({'probe': {'cmd': 'sleep 30'}})
+    ok, _d = llmdog.probe({'probe': {'cmd': 'sleep 30'}})
     assert ok is False  # run() 默认 timeout 15s
 
 
@@ -39,7 +41,7 @@ def test_probe_ok_statuses_401(monkeypatch):
     def fake_urlopen(req, timeout=10):
         raise urllib.error.HTTPError(req.full_url, 401, 'Unauthorized', {}, None)
     monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
-    ok, d = llmdog.probe({'probe': {'url': 'http://x', 'ok_statuses': [200, 401], 'bad_words': []}})
+    ok, _d = llmdog.probe({'probe': {'url': 'http://x', 'ok_statuses': [200, 401], 'bad_words': []}})
     assert ok is True
 
 
@@ -73,7 +75,7 @@ def test_guardrails_blacklist_workflow():
     svc = {'whitelist': ['shell:vim .github/workflows/x.yml']}
     plan = {'action_type': 'shell', 'action_cmd': 'vim .github/workflows/x.yml',
             'rollback_cmd': 'shell:vim .github/workflows/x.yml', 'risk': 'low'}
-    ok, why = llmdog.guardrails(svc, plan)
+    ok, _why = llmdog.guardrails(svc, plan)
     assert not ok
 
 
@@ -160,13 +162,13 @@ def test_learn_bug_low_severity_skip(tmp_paths, mock_llm):
 
 # ============ 内置动作 ============
 def test_execute_builtin_noop():
-    rc, d = llmdog.execute_builtin('noop')
+    rc, _d = llmdog.execute_builtin('noop')
     assert rc == 0
 
 
 def test_execute_builtin_kill_invalid_unit():
     """kill_main_pid 不存在的 unit:无 MainPID → rc=1 不崩。"""
-    rc, d = llmdog.execute_builtin('kill_main_pid(nonexistent-xxx.service)')
+    rc, _d = llmdog.execute_builtin('kill_main_pid(nonexistent-xxx.service)')
     assert rc == 1  # 无 MainPID,安全返回不崩
 
 
