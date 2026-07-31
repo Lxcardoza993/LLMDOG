@@ -1,0 +1,244 @@
+"""llmdog 核心逻辑测试:探活 / 四道护栏 / bug 学习循环 / 内置动作。"""
+import json, os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import llmdog
+import urllib.request
+
+
+# ============ probe ============
+def test_probe_cmd_success():
+    ok, d = llmdog.probe({'probe': {'cmd': 'true'}})
+    assert ok is True
+
+
+def test_probe_cmd_fail():
+    ok, d = llmdog.probe({'probe': {'cmd': 'false'}})
+    assert ok is False
+
+
+def test_probe_cmd_timeout():
+    ok, d = llmdog.probe({'probe': {'cmd': 'sleep 30'}})
+    assert ok is False  # run() 默认 timeout 15s
+
+
+def test_probe_bad_words_fake_200(monkeypatch):
+    """假 200 坑:body 含坏词算失败(防 503 错误体塞进 200 body)。"""
+    class FakeResp:
+        def getcode(self): return 200
+        def read(self): return b'{"error":"auth_unavailable"}'
+    monkeypatch.setattr(urllib.request, 'urlopen', lambda req, timeout=10: FakeResp())
+    ok, d = llmdog.probe({'probe': {'url': 'http://x', 'bad_words': ['auth_unavailable']}})
+    assert ok is False
+    assert 'auth_unavailable' in d
+
+
+def test_probe_ok_statuses_401(monkeypatch):
+    """要 auth 的控制器(401)算活——连得上=服务在。"""
+    import urllib.error
+    def fake_urlopen(req, timeout=10):
+        raise urllib.error.HTTPError(req.full_url, 401, 'Unauthorized', {}, None)
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    ok, d = llmdog.probe({'probe': {'url': 'http://x', 'ok_statuses': [200, 401], 'bad_words': []}})
+    assert ok is True
+
+
+# ============ guardrails 四道护栏 ============
+def test_guardrails_pass():
+    svc = {'whitelist': ['builtin:kill_main_pid(x.service)']}
+    plan = {'action_type': 'builtin', 'action_cmd': 'kill_main_pid(x.service)',
+            'rollback_cmd': 'builtin:noop', 'risk': 'low'}
+    ok, why = llmdog.guardrails(svc, plan)
+    assert ok, why
+
+
+def test_guardrails_not_in_whitelist():
+    svc = {'whitelist': ['builtin:kill_main_pid(x.service)']}
+    plan = {'action_type': 'builtin', 'action_cmd': 'kill_main_pid(y.service)',
+            'rollback_cmd': 'builtin:noop', 'risk': 'low'}
+    ok, _ = llmdog.guardrails(svc, plan)
+    assert not ok  # y 不在白名单
+
+
+def test_guardrails_blacklist_rm_rf():
+    svc = {'whitelist': ['shell:rm -rf /']}
+    plan = {'action_type': 'shell', 'action_cmd': 'rm -rf /',
+            'rollback_cmd': 'shell:rm -rf /', 'risk': 'low'}
+    ok, why = llmdog.guardrails(svc, plan)
+    assert not ok
+    assert '黑名单' in why
+
+
+def test_guardrails_blacklist_workflow():
+    svc = {'whitelist': ['shell:vim .github/workflows/x.yml']}
+    plan = {'action_type': 'shell', 'action_cmd': 'vim .github/workflows/x.yml',
+            'rollback_cmd': 'shell:vim .github/workflows/x.yml', 'risk': 'low'}
+    ok, why = llmdog.guardrails(svc, plan)
+    assert not ok
+
+
+def test_guardrails_risk_not_low():
+    svc = {'whitelist': ['builtin:kill_main_pid(x.service)']}
+    plan = {'action_type': 'builtin', 'action_cmd': 'kill_main_pid(x.service)',
+            'rollback_cmd': 'builtin:noop', 'risk': 'high'}
+    ok, _ = llmdog.guardrails(svc, plan)
+    assert not ok
+
+
+def test_guardrails_rollback_query_rejected():
+    """rollback 是纯查询(诊断命令)非动作→拒(模拟时 LLM 曾把诊断当 rollback)。"""
+    svc = {'whitelist': ['builtin:kill_main_pid(x.service)']}
+    plan = {'action_type': 'builtin', 'action_cmd': 'kill_main_pid(x.service)',
+            'rollback_cmd': 'systemctl status x', 'risk': 'low'}
+    ok, why = llmdog.guardrails(svc, plan)
+    assert not ok
+    assert '动作词' in why or '查询' in why
+
+
+def test_guardrails_noop_rollback_ok():
+    """builtin:noop 是合法 rollback(kill 后 systemd Restart=always 自拉回)。"""
+    svc = {'whitelist': ['builtin:kill_main_pid(x.service)']}
+    plan = {'action_type': 'builtin', 'action_cmd': 'kill_main_pid(x.service)',
+            'rollback_cmd': 'builtin:noop', 'risk': 'low'}
+    ok, _ = llmdog.guardrails(svc, plan)
+    assert ok
+
+
+# ============ bug 签名 ============
+def test_bug_sig_same():
+    assert llmdog._bug_sig('cpa', 'memory stuck') == llmdog._bug_sig('cpa', 'memory stuck')
+
+
+def test_bug_sig_diff_service():
+    assert llmdog._bug_sig('cpa', 'x') != llmdog._bug_sig('hermes', 'x')
+
+
+def test_bug_sig_diff_root_cause():
+    assert llmdog._bug_sig('cpa', 'a') != llmdog._bug_sig('cpa', 'b')
+
+
+# ============ bug 学习循环 ============
+def test_learn_bug_writes_learned(tmp_paths, mock_llm):
+    svc = {'name': 'cpa', 'whitelist': ['builtin:kill_main_pid(cli-proxy-api.service)']}
+    plan = {'root_cause': 'memory unavailable stuck',
+            'action_cmd': 'kill_main_pid(cli-proxy-api.service)', 'action_type': 'builtin'}
+    for _ in range(3):  # 反复 3 次达阈值
+        llmdog._learn_bug(svc, plan, 'some diag', True)
+    assert os.path.exists(tmp_paths / 'learned.yaml')
+    import yaml
+    learned = yaml.safe_load(open(tmp_paths / 'learned.yaml'))
+    assert 'cpa' in learned
+    assert len(learned['cpa']['known_issues']) >= 1
+
+
+def test_learn_bug_below_threshold_no_learn(tmp_paths, mock_llm):
+    svc = {'name': 'cpa', 'whitelist': []}
+    plan = {'root_cause': 'x', 'action_cmd': '', 'action_type': 'builtin'}
+    llmdog._learn_bug(svc, plan, 'd', True)  # 只 1 次
+    assert not os.path.exists(tmp_paths / 'learned.yaml')  # 未达阈值不提炼
+
+
+def test_learn_bug_dry_run_skip(tmp_paths, mock_llm, monkeypatch):
+    monkeypatch.setattr(llmdog, 'DRY_RUN', True)
+    svc = {'name': 'cpa', 'whitelist': []}
+    plan = {'root_cause': 'x', 'action_cmd': '', 'action_type': 'builtin'}
+    for _ in range(3):
+        llmdog._learn_bug(svc, plan, 'd', True)
+    assert not os.path.exists(tmp_paths / 'learned.yaml')  # DRY_RUN 不学
+
+
+def test_learn_bug_low_severity_skip(tmp_paths, mock_llm):
+    """LLM 判 med/low 不加入监控(只 high 才加)。"""
+    mock_llm.append('{"name":"minor","symptom":"s","root_cause":"r",'
+                     '"fix_action":"builtin:noop","severity":"med"}')
+    svc = {'name': 'cpa', 'whitelist': []}
+    plan = {'root_cause': 'minor bug', 'action_cmd': '', 'action_type': 'builtin'}
+    for _ in range(3):
+        llmdog._learn_bug(svc, plan, 'd', True)
+    assert not os.path.exists(tmp_paths / 'learned.yaml')  # med 不加入
+
+
+# ============ 内置动作 ============
+def test_execute_builtin_noop():
+    rc, d = llmdog.execute_builtin('noop')
+    assert rc == 0
+
+
+def test_execute_builtin_kill_invalid_unit():
+    """kill_main_pid 不存在的 unit:无 MainPID → rc=1 不崩。"""
+    rc, d = llmdog.execute_builtin('kill_main_pid(nonexistent-xxx.service)')
+    assert rc == 1  # 无 MainPID,安全返回不崩
+
+
+# ============ 状态 ============
+def test_state_save_load(tmp_paths):
+    monkey = None
+    st = {'cpa': {'fail_count': 5, 'last_fix': 123}}
+    llmdog.save_state(st)
+    loaded = llmdog.load_state()
+    assert loaded['cpa']['fail_count'] == 5
+
+
+# ============ main 流程集成 ============
+def _write_svc(tmp_paths, svc, monkeypatch):
+    import yaml
+    monkeypatch.setattr(llmdog, 'SERVICES_YAML', str(tmp_paths / 'services.yaml'))
+    yaml.dump({'services': [svc]}, open(str(tmp_paths / 'services.yaml'), 'w'),
+              allow_unicode=True)
+    monkeypatch.setattr(llmdog, 'TG_BOT', '')
+    monkeypatch.setattr(llmdog, 'TG_CHAT', '')
+
+
+def test_main_healthy_clears_counter(tmp_paths, monkeypatch):
+    """探活通→清计数,不告警。"""
+    _write_svc(tmp_paths, {'name': 'ok_svc', 'probe': {'cmd': 'true'},
+              'fail_threshold': 3, 'cooldown_min': 10, 'mode': 'alert',
+              'diagnostics': ['true'], 'whitelist': [], 'rollback': [],
+              'known_issues': []}, monkeypatch)
+    notified = []
+    monkeypatch.setattr(llmdog, 'notify', lambda m: notified.append(m))
+    llmdog.main()
+    st = llmdog.load_state()
+    assert st['ok_svc']['fail_count'] == 0
+    assert not notified
+
+
+def test_main_alert_mode_notifies(tmp_paths, mock_llm, monkeypatch):
+    """alert 模式:探活失败→告警,不调 LLM 执行。"""
+    _write_svc(tmp_paths, {'name': 'alert_svc', 'probe': {'cmd': 'false'},
+              'fail_threshold': 1, 'cooldown_min': 0, 'mode': 'alert',
+              'diagnostics': ['true'], 'whitelist': [], 'rollback': [],
+              'known_issues': []}, monkeypatch)
+    notified = []
+    monkeypatch.setattr(llmdog, 'notify', lambda m: notified.append(m))
+    llmdog.main()
+    assert any('alert_svc' in n for n in notified)
+
+
+def test_main_dry_run_fake_execute(tmp_paths, mock_llm, monkeypatch):
+    """DRY_RUN: llm_analyze 出方案→护栏通过→假执行(不真 kill),记 DRYRUN。"""
+    monkeypatch.setattr(llmdog, 'DRY_RUN', True)
+    _write_svc(tmp_paths, {'name': 'llm_svc', 'probe': {'cmd': 'false'},
+              'fail_threshold': 1, 'cooldown_min': 0, 'mode': 'llm_analyze',
+              'diagnostics': ['true'],
+              'whitelist': ['builtin:kill_main_pid(x.service)'],
+              'rollback': ['builtin:noop'], 'known_issues': []}, monkeypatch)
+    notified = []
+    monkeypatch.setattr(llmdog, 'notify', lambda m: notified.append(m))
+    llmdog.main()
+    st = llmdog.load_state()
+    assert st['llm_svc']['last_fix'] > 0  # DRY_RUN 也设 last_fix
+    assert st['llm_svc']['fail_count'] == 1  # 未清零(DRY_RUN 未真修复验证)
+
+
+def test_main_llm_unavailable_fallback(tmp_paths, monkeypatch):
+    """LLM 不可用(call_llm 返回 None)→ 发原始诊断 TG,不执行。"""
+    monkeypatch.setattr(llmdog, 'call_llm', lambda p, timeout=60: None)
+    _write_svc(tmp_paths, {'name': 'dead_svc', 'probe': {'cmd': 'false'},
+              'fail_threshold': 1, 'cooldown_min': 0, 'mode': 'llm_analyze',
+              'diagnostics': ['true'],
+              'whitelist': ['builtin:kill_main_pid(x.service)'],
+              'rollback': ['builtin:noop'], 'known_issues': []}, monkeypatch)
+    notified = []
+    monkeypatch.setattr(llmdog, 'notify', lambda m: notified.append(m))
+    llmdog.main()
+    assert any('LLM' in n and '不可用' in n for n in notified)
