@@ -106,6 +106,30 @@ def test_guardrails_noop_rollback_ok():
     assert ok
 
 
+# ============ build_fixed_plan(fixed_rule 快路径)============
+def test_build_fixed_plan_strips_shell_prefix():
+    """回归:action_cmd 必须剥 shell: 前缀——否则撞上 guardrails 的无前缀
+    wl_norm 永远不匹配(2026-07-31 tgbot_verify 被自家护栏拦截 4h 的根因)。"""
+    svc = {'fixed_action': 'shell:docker restart c', 'rollback': ['shell:docker start c'],
+           'whitelist': ['shell:docker restart c']}
+    plan = llmdog.build_fixed_plan(svc)
+    assert plan['action_type'] == 'shell'
+    assert plan['action_cmd'] == 'docker restart c'
+    assert plan['rollback_cmd'] == 'shell:docker start c'  # rollback 保留前缀(护栏特例认 builtin:noop)
+    ok, why = llmdog.guardrails(svc, plan)
+    assert ok, why
+
+
+def test_build_fixed_plan_builtin_prefix():
+    svc = {'fixed_action': 'builtin:kill_main_pid(x.service)', 'rollback': ['builtin:noop'],
+           'whitelist': ['builtin:kill_main_pid(x.service)']}
+    plan = llmdog.build_fixed_plan(svc)
+    assert plan['action_type'] == 'builtin'
+    assert plan['action_cmd'] == 'kill_main_pid(x.service)'
+    ok, why = llmdog.guardrails(svc, plan)
+    assert ok, why
+
+
 # ============ bug 签名 ============
 def test_bug_sig_same():
     assert llmdog._bug_sig('cpa', 'memory stuck') == llmdog._bug_sig('cpa', 'memory stuck')
