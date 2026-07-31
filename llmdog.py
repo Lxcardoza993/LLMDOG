@@ -33,6 +33,7 @@ LOCK_FILE = os.path.join(STATE_DIR, 'llmdog.lock')
 # bug 学习机制:反复修复的 bug 提炼成 known_issue 自动加入监控自愈
 LEARNED_YAML = os.path.join(STATE_DIR, 'services_learned.yaml')  # 机器学习追加(纯数据,不动 services.yaml 注释)
 BUGS_JSON = os.path.join(STATE_DIR, 'bugs.json')                # bug 签名计数库
+NOTIFIED_JSON = os.path.join(STATE_DIR, 'notified.json')        # 🧠通知历史(独立持久化,防状态丢失重报)
 LEARN_THRESHOLD = 3  # 反复>=3次且 LLM 判 high 才提炼加入
 
 # ---------- 加载 config.env ----------
@@ -360,6 +361,21 @@ def _bug_sig(service, root_cause):
     key = f"{service}|{(root_cause or '')[:80]}"
     return hashlib.md5(key.encode()).hexdigest()[:12]
 
+
+def _notified_sigs():
+    """已 🧠 通知过的 issue 签名集合。独立于 bugs.json/services_learned.yaml 持久化——
+    那俩文件被删(2026-07-31 实测)会重学重报,这层兜住'同一 bug 只报一次'。"""
+    try:
+        return set(json.load(open(NOTIFIED_JSON, encoding='utf-8')))
+    except Exception:
+        return set()
+
+
+def _notified_add(sig):
+    s = _notified_sigs()
+    s.add(sig)
+    json.dump(sorted(s), open(NOTIFIED_JSON, 'w', encoding='utf-8'), ensure_ascii=False)
+
 def _llm_extract_issue(svc, plan, diag):
     """LLM 提炼 known_issue。返回 {name,symptom,root_cause,fix_action,severity} 或 None"""
     prompt = f"""服务 {svc['name']} 刚修复了一个 bug,提炼成 known_issue 供看门狗未来自愈。
@@ -421,11 +437,13 @@ def _learn_bug(svc, plan, diag, success):
                         lsvc['whitelist'].append(fa)
                     yaml.dump(learned, open(LEARNED_YAML, 'w', encoding='utf-8'),
                               allow_unicode=True, sort_keys=False)
-                    # notify 去重:同一 bug 签名只发一次 TG(防 LLM name 漂移导致重复通知)
-                    if not b.get('notified'):
+                    # notify 去重两道闸:b['notified'](bugs.json)+ notified.json 独立持久化
+                    # ——防 bugs.json/services_learned.yaml 被删后重学重报轰炸 TG
+                    if not b.get('notified') and issue_sig not in _notified_sigs():
                         notify(f'🧠 llmdog 学了新 bug(已加监控自愈): {name} - {issue.get("name","")}\n'
                                f'修法: {fa}\n严重度: {issue.get("severity")}')
                         b['notified'] = True
+                        _notified_add(issue_sig)
                 b['learned'] = True
             else:
                 b['learned'] = True

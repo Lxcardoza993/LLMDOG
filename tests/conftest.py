@@ -18,6 +18,7 @@ def tmp_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(llmdog, 'STATE_FILE', os.path.join(d, 'state.json'))
     monkeypatch.setattr(llmdog, 'BUGS_JSON', os.path.join(d, 'bugs.json'))
     monkeypatch.setattr(llmdog, 'LEARNED_YAML', os.path.join(d, 'learned.yaml'))
+    monkeypatch.setattr(llmdog, 'NOTIFIED_JSON', os.path.join(d, 'notified.json'))
     monkeypatch.setattr(llmdog, 'LOCK_FILE', os.path.join(d, 'lock'))
     monkeypatch.setattr(llmdog, 'DRY_RUN', False)  # 测试真修复路径(不跳过 _learn_bug)
     return tmp_path
