@@ -124,33 +124,70 @@ def collect_diag(svc):
     return '\n---\n'.join(out)
 
 # ---------- LLM 调用(non-stream)----------
-def call_llm(prompt, timeout=60):
+def _llm_providers():
+    """LLM 提供商列表(services.yaml 顶层 llm_providers);未配置则回退 env 单 provider(向后兼容)。
+    多提供商动机:8317=CPA 本身,CPA 卡死时 LLM 全瘫只能告警(2026-08-01 凌晨两次'需人工');
+    备胎百炼直连(国内云端,不依赖 clash/CPA)。按列表顺序 failover。"""
+    try:
+        y = yaml.safe_load(open(SERVICES_YAML, encoding='utf-8')) or {}
+        ps = y.get('llm_providers') or []
+        if ps:
+            return ps
+    except Exception:
+        pass
+    return [{'name': 'default', 'url': LLM_URL, 'key': LLM_KEY, 'model': LLM_MODEL}]
+
+
+# CPA 假200:503 错误体塞进 HTTP 200 body——含这些关键词的"成功"回复要当失败换下一家
+# 匹配前对回复做小写+去空格,兼容 json.dumps 加空格('"type": "error"')和原文无空格两种形态
+_LLM_BAD_WORDS = ('auth_unavailable', 'noauthavailable', '"type":"error"',
+                  'invalidapikey', 'incorrectapikey')
+
+
+def _call_one_llm(p, prompt, timeout):
     body = json.dumps({
-        'model': LLM_MODEL,
+        'model': p.get('model', LLM_MODEL),
         # reasoning 模型(thinking 块)先吃 token,800 不够撑过推理会截断空回复;给 2000
         'max_tokens': 2000,
         'messages': [{'role': 'user', 'content': prompt}]
     }).encode()
-    req = urllib.request.Request(LLM_URL, data=body, headers={
-        'Authorization': f'Bearer {LLM_KEY}',
+    req = urllib.request.Request(p['url'], data=body, headers={
+        # 两种认证头都发:CPA/8317 认 Authorization,百炼 anthropic 端点认 x-api-key,各取所需
+        'Authorization': f'Bearer {p.get("key", "")}',
+        'x-api-key': p.get('key', ''),
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json'
     }, method='POST')
-    try:
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        d = json.loads(resp.read().decode())
-        # anthropic messages 格式: content 是 list,含 thinking 块(reasoning)+ text 块(实际回复)
-        # 不能取 content[0]——那是 thinking 块;要遍历找 type==text 的块
-        if isinstance(d, dict) and 'content' in d and d['content']:
-            for b in d['content']:
-                if b.get('type') == 'text' and b.get('text'):
-                    return b['text']
-            # fallback: 第一个块的 text(若没有 text 块)
-            return d['content'][0].get('text', '') or json.dumps(d)[:1000]
-        return json.dumps(d)[:1000]
-    except Exception as e:
-        log('LLM_FAIL', error=str(e)[:200])
-        return None  # 8317 不可用
+    resp = urllib.request.urlopen(req, timeout=int(p.get('timeout', timeout)))
+    d = json.loads(resp.read().decode())
+    # anthropic messages 格式: content 是 list,含 thinking 块(reasoning)+ text 块(实际回复)
+    # 不能取 content[0]——那是 thinking 块;要遍历找 type==text 的块
+    if isinstance(d, dict) and 'content' in d and d['content']:
+        for b in d['content']:
+            if b.get('type') == 'text' and b.get('text'):
+                return b['text']
+        # fallback: 第一个块的 text(若没有 text 块)
+        return d['content'][0].get('text', '') or json.dumps(d)[:1000]
+    return json.dumps(d)[:1000]
+
+
+def call_llm(prompt, timeout=60):
+    """按 llm_providers 顺序 failover;假200/空回复/异常都换下一家;全挂返回 None。"""
+    providers = _llm_providers()
+    for i, p in enumerate(providers):
+        try:
+            txt = _call_one_llm(p, prompt, timeout)
+            low = (txt or '').lower().replace(' ', '')
+            if not txt or any(bw in low for bw in _LLM_BAD_WORDS):
+                log('LLM_FAIL', provider=p.get('name', '?'), reason='假200或空回复',
+                    body=(txt or '')[:120])
+                continue
+            if i > 0:
+                log('LLM_FAILOVER', provider=p.get('name', '?'), note=f'前{i}家不可用,已切换')
+            return txt
+        except Exception as e:
+            log('LLM_FAIL', provider=p.get('name', '?'), error=str(e)[:200])
+    return None
 
 def _extract_json(txt):
     if not txt: return None

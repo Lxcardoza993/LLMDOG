@@ -1,4 +1,5 @@
 """llmdog 核心逻辑测试:探活 / 四道护栏 / bug 学习循环 / 内置动作。"""
+import json
 import os
 import sys
 
@@ -341,3 +342,80 @@ def test_main_llm_down_known_issue_executes(tmp_paths, monkeypatch):
     assert executed == ['kill_main_pid(x.service)']  # 走了 fallback 真执行
     assert any('修复成功' in n for n in notified)
     assert not any('不可用' in n for n in notified)  # 不再只告警需人工
+
+
+# ============ call_llm 多提供商 failover ============
+def _write_providers(tmp_paths, providers, monkeypatch):
+    """写只含 llm_providers 的 services.yaml,并把 SERVICES_YAML 指过去。"""
+    import yaml
+    monkeypatch.setattr(llmdog, 'SERVICES_YAML', str(tmp_paths / 'services.yaml'))
+    yaml.dump({'services': [], 'llm_providers': providers},
+              open(str(tmp_paths / 'services.yaml'), 'w'), allow_unicode=True)
+
+
+class _FakeLLMResp:
+    def __init__(self, d):
+        self._d = d
+
+    def read(self):
+        return json.dumps(self._d).encode()
+
+
+def test_call_llm_failover_to_second(tmp_paths, monkeypatch):
+    """第一家挂(连接异常)→ 自动切第二家并返回。
+    动机:8317=CPA 自己,CPA 卡死时 LLM 全瘫只能告警(2026-08-01 凌晨实战)。"""
+    _write_providers(tmp_paths, [
+        {'name': 'dead', 'url': 'http://x/1', 'key': 'k', 'model': 'm'},
+        {'name': 'alive', 'url': 'http://x/2', 'key': 'k', 'model': 'm'},
+    ], monkeypatch)
+
+    def fake_urlopen(req, timeout=60):
+        if '/1' in req.full_url:
+            raise TimeoutError('hang')
+        return _FakeLLMResp({'content': [{'type': 'text', 'text': 'ok-answer'}]})
+
+    monkeypatch.setattr(llmdog.urllib.request, 'urlopen', fake_urlopen)
+    assert llmdog.call_llm('p') == 'ok-answer'
+
+
+def test_call_llm_fake200_failover(tmp_paths, monkeypatch):
+    """第一家返回假 200(auth_unavailable 错误体塞进 200)→ 当失败切第二家。"""
+    _write_providers(tmp_paths, [
+        {'name': 'fake', 'url': 'http://x/1', 'key': 'k', 'model': 'm'},
+        {'name': 'alive', 'url': 'http://x/2', 'key': 'k', 'model': 'm'},
+    ], monkeypatch)
+
+    def fake_urlopen(req, timeout=60):
+        if '/1' in req.full_url:
+            return _FakeLLMResp({'content': [{'type': 'text',
+                                 'text': 'auth_unavailable: no auth available'}]})
+        return _FakeLLMResp({'content': [{'type': 'text', 'text': 'real-answer'}]})
+
+    monkeypatch.setattr(llmdog.urllib.request, 'urlopen', fake_urlopen)
+    assert llmdog.call_llm('p') == 'real-answer'
+
+
+def test_call_llm_all_down_returns_none(tmp_paths, monkeypatch):
+    """全挂 → None(走 known_issue_fallback/告警,不崩)。"""
+    _write_providers(tmp_paths, [
+        {'name': 'd1', 'url': 'http://x/1', 'key': 'k', 'model': 'm'},
+        {'name': 'd2', 'url': 'http://x/2', 'key': 'k', 'model': 'm'},
+    ], monkeypatch)
+
+    def boom(req, timeout=60):
+        raise ConnectionError('down')
+
+    monkeypatch.setattr(llmdog.urllib.request, 'urlopen', boom)
+    assert llmdog.call_llm('p') is None
+
+
+def test_call_llm_env_fallback_when_no_providers(tmp_paths, monkeypatch):
+    """services.yaml 无 llm_providers → 回退 env 单 provider(向后兼容老配置)。"""
+    monkeypatch.setattr(llmdog, 'SERVICES_YAML', str(tmp_paths / 'nonexist.yaml'))
+    monkeypatch.setattr(llmdog, 'LLM_URL', 'http://x/9')
+    monkeypatch.setattr(llmdog, 'LLM_KEY', 'k')
+    monkeypatch.setattr(llmdog, 'LLM_MODEL', 'm')
+    monkeypatch.setattr(llmdog.urllib.request, 'urlopen',
+                        lambda req, timeout=60: _FakeLLMResp(
+                            {'content': [{'type': 'text', 'text': 'env-answer'}]}))
+    assert llmdog.call_llm('p') == 'env-answer'
