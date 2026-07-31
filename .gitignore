@@ -1,0 +1,17 @@
+# secrets(含真 key/token,绝不提交)
+config.env
+services.yaml
+
+# 运行时状态/日志
+state/
+logs/
+*.lock
+*.bak
+
+# python
+__pycache__/
+*.pyc
+
+# 编辑器
+.vscode/
+.idea/

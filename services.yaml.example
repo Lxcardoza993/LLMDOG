@@ -1,0 +1,99 @@
+# LLMDOG 服务清单示例 —— 复制为 services.yaml 按你的服务改
+#
+# 字段说明:
+#   probe:
+#     - HTTP 探活:填 url/method/headers/body
+#     - cmd 探活(非HTTP服务如docker):填 cmd(shell,exit0=活)
+#     - ok_statuses: 默认[200];要auth的控制器(如clash/mihomo)用[200,401],401=连得上=活
+#     - bad_words: body 含这些词算失败(防"503错误体塞进200 body"假活坑)
+#   fail_threshold: 连续几次失败才触发修复
+#   cooldown_min:   两次修复间隔(防抖)
+#   mode: llm_analyze(走LLM分析修复) | fixed_rule(固定动作) | alert(只告警不修复)
+#   diagnostics:    触发后收集的诊断命令(喂LLM)
+#   whitelist:      LLM 只能从这选动作
+#                  - builtin:xxx 内置安全(kill_main_pid / noop)
+#                  - shell:xxx 逐字校验(user级服务用 systemctl --user restart)
+#   rollback:       回滚动作(builtin:noop 当 systemd Restart=always 自拉回)
+#   known_issues:   历史反复bug(症状+根因+对症修法),喂LLM复发时对症
+
+services:
+  # ============ 示例1: LLM 中转站(CPA类)——探活要真调推理才能抓"假活" ============
+  - name: my_llm_proxy
+    probe:
+      url: http://127.0.0.1:8317/v1/messages
+      method: POST
+      headers:
+        Authorization: "Bearer <YOUR_CPA_KEY>"
+        anthropic-version: "2023-06-01"
+        Content-Type: "application/json"
+      body: '{"model":"glm-5.2","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
+      # non-stream 防假200;必须看body关键词(有些代理把503错误体塞进200 body)
+      bad_words: ["auth_unavailable", "no auth available", '"type":"error"']
+    fail_threshold: 3
+    cooldown_min: 10
+    mode: llm_analyze
+    diagnostics:
+      - "systemctl status my-llm-proxy.service --no-pager -l"
+      - "journalctl -u my-llm-proxy.service -n 80 --no-pager"
+      - "curl -s --max-time 5 -H 'Authorization: Bearer <YOUR_CPA_KEY>' http://127.0.0.1:8317/v1/models | head -c 500"
+      - "ps -ef | grep my-llm-proxy | grep -v grep"
+    whitelist:
+      # builtin:kill_main_pid = SIGTERM 5s 后 SIGKILL(属主你不用sudo);systemd Restart=always 自拉回
+      - "builtin:kill_main_pid(my-llm-proxy.service)"
+    rollback:
+      - "builtin:noop"   # kill 后 systemd 自拉回,无需显式 start
+    known_issues:
+      - name: "内存级卡死(改config不清)"
+        symptom: "探活body含auth_unavailable,但进程在、/models能响应"
+        root_cause: "内存级unavailable卡死,改config不清(WSL2 fsnotify死),kill主进程才清"
+        fix_action: "builtin:kill_main_pid(my-llm-proxy.service)"
+
+  # ============ 示例2: 普通HTTP服务(user systemd)——能 systemctl --user restart ============
+  - name: my_webui
+    probe:
+      url: http://127.0.0.1:8788/
+      method: GET
+      ok_statuses: [200, 302]   # 302 redirect 也算活
+      bad_words: []
+    fail_threshold: 3
+    cooldown_min: 10
+    mode: llm_analyze
+    diagnostics:
+      - "systemctl --user status my-webui.service --no-pager -l"
+      - "journalctl --user -u my-webui.service -n 80 --no-pager"
+      - "curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8788/"
+    whitelist:
+      - "shell:systemctl --user restart my-webui.service"
+    rollback:
+      - "shell:systemctl --user start my-webui.service"
+    known_issues: []
+
+  # ============ 示例3: 要auth的控制器(如clash/mihomo)——401=连得上=活 ============
+  # - name: my_proxy_ctl
+  #   probe:
+  #     url: http://127.0.0.1:9097/version
+  #     method: GET
+  #     ok_statuses: [200, 401]   # 401=控制器在(要auth),连得上=活;连不上=死
+  #     bad_words: []
+  #   fail_threshold: 5
+  #   cooldown_min: 15
+  #   mode: alert    # 只告警:已有别的看门狗管切节点,不重叠;且挂时TG走代理发不出
+  #   diagnostics:
+  #     - "systemctl --user status my-proxy-watchdog.service --no-pager -l"
+  #   whitelist: []
+  #   rollback: []
+  #   known_issues: []
+
+  # ============ 示例4: 非HTTP服务(docker)——cmd探活,只告警(重启需root) ============
+  # - name: docker
+  #   probe:
+  #     cmd: "docker info --format '{{.ServerVersion}}'"   # cmd探活,exit0=活
+  #   fail_threshold: 3
+  #   cooldown_min: 15
+  #   mode: alert    # 只告警:重启docker需root,llmdog以普通用户跑修不了
+  #   diagnostics:
+  #     - "docker ps --format '{{.Names}} {{.Status}}'"
+  #     - "systemctl status docker.service --no-pager -l"
+  #   whitelist: []
+  #   rollback: []
+  #   known_issues: []

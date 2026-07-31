@@ -1,0 +1,13 @@
+[Unit]
+Description=llmdog every 2 minutes
+
+[Timer]
+# 开机 2 分钟后首跑;之后每次 inactive 2 分钟再跑(对齐现有看门狗体系)
+OnBootSec=2min
+OnUnitInactiveSec=2min
+Unit=llmdog.service
+# 关机期间错过的触发,开机后补跑一次
+Persistent=true
+
+[Install]
+WantedBy=timers.target

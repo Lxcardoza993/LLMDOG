@@ -1,0 +1,12 @@
+[Unit]
+Description=llmdog LLM watchdog (oneshot: probe -> diagnose -> LLM analyze -> guardrails -> fix -> verify)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/home/li/llmdog/config.env
+ExecStart=/usr/bin/python3 /home/li/llmdog/llmdog.py
+# 脚本内已 flock 防并发;LLM 分析可能 60s+,给够超时
+TimeoutStartSec=180
+# 不 Restart=always(这是 oneshot 周期任务,由 .timer 触发;崩了等下一轮)
