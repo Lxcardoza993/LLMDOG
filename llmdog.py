@@ -532,7 +532,9 @@ def main():
         # ---- 真执行 ----
         rc, outp = execute(plan)
         log('EXEC', name, rc=rc, out=outp[:200])
-        time.sleep(8)
+        # 验证等待:启动慢的服务(PTB bot:容器→MySQL初始化→getMe→轮询首行日志 ~30-60s)
+        # 默认 8s 复查太早会误判修复失败→误回滚+误报 ❌(2026-07-31 23:15 tgbot_verify 实战)
+        time.sleep(int(svc.get('verify_wait', 8)))
         ok2, detail2 = probe(svc)
         if ok2:
             notify(f'✅ {name}: 修复成功。动作:{plan.get("action_cmd")}。根因:{str(plan.get("root_cause",""))[:100]}')
