@@ -130,6 +130,28 @@ def test_build_fixed_plan_builtin_prefix():
     assert ok, why
 
 
+# ============ _learn_bug 学习通知去重 ============
+def test_learn_bug_notify_only_once_even_if_state_lost(tmp_paths, mock_llm, monkeypatch):
+    """同一 bug 只 🧠 通知一次——即使 bugs.json/services_learned.yaml 被删
+    (2026-07-31 真实事故:state 文件丢失 → 重学 → TG 重复轰炸)。"""
+    sent = []
+    monkeypatch.setattr(llmdog, 'notify', lambda m: sent.append(m))
+    svc = {'name': 'cpa', 'whitelist': ['builtin:kill_main_pid(x.service)']}
+    plan = {'action_cmd': 'kill_main_pid(x.service)', 'root_cause': 'mem stuck'}
+    # 连续 3 次真修复成功,达到学习阈值
+    for _ in range(3):
+        llmdog._learn_bug(svc, plan, 'diag', True)
+    assert len([m for m in sent if '学了新 bug' in m]) == 1
+    # 模拟状态文件被删(bugs.json + learned.yaml),计数清零重学
+    os.remove(llmdog.BUGS_JSON)
+    os.remove(llmdog.LEARNED_YAML)
+    for _ in range(3):
+        llmdog._learn_bug(svc, plan, 'diag', True)
+    # notified.json 独立存活 → 不再重报;learned.yaml 会重建(自愈知识不丢)
+    assert len([m for m in sent if '学了新 bug' in m]) == 1
+    assert os.path.exists(llmdog.LEARNED_YAML)
+
+
 # ============ bug 签名 ============
 def test_bug_sig_same():
     assert llmdog._bug_sig('cpa', 'memory stuck') == llmdog._bug_sig('cpa', 'memory stuck')
