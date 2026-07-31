@@ -1,5 +1,6 @@
 """llmdog 核心逻辑测试:探活 / 四道护栏 / bug 学习循环 / 内置动作。"""
-import json, os, sys
+import os
+import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import llmdog
 import urllib.request
@@ -171,7 +172,6 @@ def test_execute_builtin_kill_invalid_unit():
 
 # ============ 状态 ============
 def test_state_save_load(tmp_paths):
-    monkey = None
     st = {'cpa': {'fail_count': 5, 'last_fix': 123}}
     llmdog.save_state(st)
     loaded = llmdog.load_state()

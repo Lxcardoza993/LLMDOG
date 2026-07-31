@@ -5,8 +5,17 @@
 # 默认 DRY_RUN=1(只分析+假执行不动真格);跑稳改 config.env LLMDOG_DRY_RUN=0 开自动
 # LLM 直连 8317 不走 clash 8899(防 clash 挂时看门狗也瞎)
 
-import os, sys, json, time, subprocess, fcntl, re, traceback, hashlib
-import urllib.request, urllib.error
+import os
+import sys
+import json
+import time
+import subprocess
+import fcntl
+import re
+import traceback
+import hashlib
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 
 try:
@@ -202,7 +211,6 @@ BLACK = ['rm -rf', 'force push', '--force', 'git push -f', 'drop table',
 
 def guardrails(svc, plan):
     """返回 (ok:bool, why:str)"""
-    atype = plan.get('action_type', '')
     cmd = plan.get('action_cmd', '')
     wl = svc.get('whitelist', [])
     # 去前缀后的白名单命令集合
