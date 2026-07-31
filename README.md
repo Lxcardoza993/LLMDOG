@@ -58,7 +58,7 @@
 ## 📦 Install
 
 ```bash
-git clone https://github.com/YOUR_USER/LLMDOG.git
+git clone https://github.com/Lxcardoza993/LLMDOG.git
 cd LLMDOG
 
 # 1. config (fill your LLM endpoint/key + TG bot token, then chmod 600)
@@ -171,7 +171,7 @@ This project stands on the shoulders of the countless self-hosted watchdogs and 
 ### 安装
 
 ```bash
-git clone https://github.com/YOUR_USER/LLMDOG.git && cd LLMDOG
+git clone https://github.com/Lxcardoza993/LLMDOG.git && cd LLMDOG
 cp config.env.example config.env        # 填 LLM 端点/key + TG token,chmod 600
 cp services.yaml.example services.yaml # 填你的服务
 mkdir -p ~/.config/systemd/user/ && cp llmdog.service llmdog.timer ~/.config/systemd/user/
