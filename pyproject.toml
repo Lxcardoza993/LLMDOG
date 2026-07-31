@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Lxcardoza"}]
 requires-python = ">=3.8"
-dependencies = ["pyyaml>=6.0"]
+dependencies = ["pyyaml>=6.0.3"]
 keywords = ["watchdog", "self-healing", "llm", "monitoring", "systemd", "observability", "homelab"]
 classifiers = [
   "License :: OSI Approved :: MIT License",
