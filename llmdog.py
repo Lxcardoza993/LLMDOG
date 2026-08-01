@@ -464,7 +464,10 @@ def _learn_bug(svc, plan, diag, success):
     rc = str(plan.get('root_cause', ''))[:80] if plan else ''
     if not rc:
         return
-    sig = _bug_sig(name, rc)
+    # 签名用修复动作(action_cmd)而非 root_cause 措辞——2026-08-01 实战:CPA 内存卡死
+    # 连修 3 次,LLM 三次三种措辞,按措辞签名裂成 3 个 bug 各 count=1,永远达不到学习阈值。
+    # 同一服务反复用同一招=同一反复病,且 known_issue 的核心就是 fix_action。
+    sig = _bug_sig(name, str(plan.get('action_cmd', '')) or rc)
     bugs = {}
     if os.path.exists(BUGS_JSON):
         try:
@@ -492,9 +495,10 @@ def _learn_bug(svc, plan, diag, success):
                     except Exception:
                         learned = {}
                 lsvc = learned.setdefault(name, {'known_issues': [], 'whitelist': []})
-                # 去重键用 root_cause 稳定签名,不用 LLM 生成的 name(不稳定:同 bug 可能给出 "memory unavailable stuck" / "memory stuck" 不同短名 → 重复 append+重复 notify)
-                issue_sig = _bug_sig(name, issue.get('root_cause', ''))
-                existing_sigs = [_bug_sig(name, i.get('root_cause', '')) for i in lsvc.get('known_issues', []) if isinstance(i, dict) and i.get('root_cause')]
+                # 去重键用 fix_action 稳定签名(与 bugs.json 计数签名同维度)——
+                # 不用 LLM 生成的 name/root_cause(自由文本不稳定:同 bug 每次措辞不同 → 重复 append+重复 notify)
+                issue_sig = _bug_sig(name, issue.get('fix_action', '') or issue.get('root_cause', ''))
+                existing_sigs = [_bug_sig(name, i.get('fix_action', '') or i.get('root_cause', '')) for i in lsvc.get('known_issues', []) if isinstance(i, dict)]
                 if issue_sig not in existing_sigs:
                     lsvc['known_issues'].append(issue)
                     fa = issue.get('fix_action', '')

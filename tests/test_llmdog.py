@@ -187,6 +187,22 @@ def test_learn_bug_below_threshold_no_learn(tmp_paths, mock_llm):
     assert not os.path.exists(tmp_paths / 'learned.yaml')  # 未达阈值不提炼
 
 
+def test_learn_bug_same_action_merges_despite_wording(tmp_paths, mock_llm):
+    """同一服务同一修复动作,LLM 措辞不同也必须归并计数——
+    2026-08-01 实战:CPA 内存卡死连修 3 次全成功,但 LLM 三次三种 root_cause
+    措辞,按措辞签名裂成 3 个 bug 各 count=1,永远达不到学习阈值 3。"""
+    import json as _j
+    svc = {'name': 'cpa', 'whitelist': ['builtin:kill_main_pid(x.service)']}
+    for i in range(3):
+        plan = {'root_cause': f'内存级卡死的第{i}种措辞,每次都不同',
+                'action_cmd': 'kill_main_pid(x.service)', 'action_type': 'builtin'}
+        llmdog._learn_bug(svc, plan, 'diag', True)
+    bugs = _j.load(open(llmdog.BUGS_JSON))
+    assert len(bugs) == 1  # 归并成一个 bug 而非三个
+    assert list(bugs.values())[0]['count'] == 3
+    assert os.path.exists(tmp_paths / 'learned.yaml')  # 达阈值 → 已提炼
+
+
 def test_learn_bug_dry_run_skip(tmp_paths, mock_llm, monkeypatch):
     monkeypatch.setattr(llmdog, 'DRY_RUN', True)
     svc = {'name': 'cpa', 'whitelist': []}
