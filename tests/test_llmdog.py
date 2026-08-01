@@ -435,3 +435,45 @@ def test_call_llm_env_fallback_when_no_providers(tmp_paths, monkeypatch):
                         lambda req, timeout=60: _FakeLLMResp(
                             {'content': [{'type': 'text', 'text': 'env-answer'}]}))
     assert llmdog.call_llm('p') == 'env-answer'
+
+
+# ============ notify 重试 ============
+def _mock_tg(monkeypatch):
+    monkeypatch.setattr(llmdog, 'TG_BOT', 'tok')
+    monkeypatch.setattr(llmdog, 'TG_CHAT', 'chat')
+    monkeypatch.setattr(llmdog.time, 'sleep', lambda s: None)  # 不真等 20s
+
+
+def test_notify_retries_on_transient_failure(tmp_paths, monkeypatch):
+    """代理 SSL 抖动(瞬时)→ 重试成功;不再一击即弃。
+    2026-08-01 实战:CPA 修复成功的 ✅ 喜报因 SSL 握手超时丢失。"""
+    _mock_tg(monkeypatch)
+    calls = {'n': 0}
+
+    class FlakeyOpener:
+        def open(self, req, timeout=10):
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise TimeoutError('ssl handshake timeout')
+            return object()
+
+    monkeypatch.setattr(llmdog.urllib.request, 'build_opener',
+                        lambda *a, **k: FlakeyOpener())
+    llmdog.notify('test')
+    assert calls['n'] == 2  # 第一次失败,重试一次成功
+
+
+def test_notify_gives_up_after_3(tmp_paths, monkeypatch):
+    """代理真挂(持续失败)→ 3 次后放弃降级写日志,不无限重试卡死主流程。"""
+    _mock_tg(monkeypatch)
+    calls = {'n': 0}
+
+    class DeadOpener:
+        def open(self, req, timeout=10):
+            calls['n'] += 1
+            raise ConnectionError('proxy down')
+
+    monkeypatch.setattr(llmdog.urllib.request, 'build_opener',
+                        lambda *a, **k: DeadOpener())
+    llmdog.notify('test')
+    assert calls['n'] == 3

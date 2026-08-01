@@ -392,17 +392,25 @@ def notify(msg):
         return
     # telegram 在大陆被墙,WSL2 直连不通;走 clash 8899 http 代理
     # 局限:clash 自己挂时 8899 不通 → TG 发不出 → 降级只写日志(日志里 NOTIFY_FAIL 可查)
+    # 2026-08-01 加重试:代理 SSL 抖动(握手超时/UNEXPECTED_EOF)是瞬时故障,当天 ✅ 喜报
+    # 就因此丢过;失败后等 20s 再试共 3 次,最坏 ~50s(oneshot 脚本可承受);真挂了照样降级
     proxy = os.environ.get('LLMDOG_TG_PROXY', 'http://127.0.0.1:8899')
-    try:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
-        data = json.dumps({'chat_id': TG_CHAT, 'text': msg[:4000]}).encode()
-        req = urllib.request.Request(
-            f'https://api.telegram.org/bot{TG_BOT}/sendMessage',
-            data=data, headers={'Content-Type': 'application/json'}, method='POST')
-        opener.open(req, timeout=10)
-    except Exception as e:
-        log('NOTIFY_FAIL', error=str(e)[:200])
+    for attempt in range(3):
+        try:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
+            data = json.dumps({'chat_id': TG_CHAT, 'text': msg[:4000]}).encode()
+            req = urllib.request.Request(
+                f'https://api.telegram.org/bot{TG_BOT}/sendMessage',
+                data=data, headers={'Content-Type': 'application/json'}, method='POST')
+            opener.open(req, timeout=10)
+            if attempt:
+                log('NOTIFY_RETRY_OK', attempt=attempt)
+            return
+        except Exception as e:
+            log('NOTIFY_FAIL', error=str(e)[:200], attempt=attempt)
+            if attempt < 2:
+                time.sleep(20)
 
 # ---------- 服务加载(merge services.yaml + services_learned.yaml)----------
 def load_services():
