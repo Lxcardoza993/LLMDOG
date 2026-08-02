@@ -46,6 +46,23 @@ def test_probe_ok_statuses_401(monkeypatch):
     assert ok is True
 
 
+def test_probe_custom_timeout(monkeypatch):
+    """probe.timeout 按服务覆盖默认 10s(grok2api chat 冷解题慢但健康)。"""
+    seen = {}
+
+    class FakeResp:
+        def getcode(self): return 200
+        def read(self): return b'{"ok":true}'
+
+    def fake_urlopen(req, timeout=10):
+        seen['timeout'] = timeout
+        return FakeResp()
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    ok, _d = llmdog.probe({'probe': {'url': 'http://x', 'timeout': 45, 'bad_words': []}})
+    assert ok is True
+    assert seen['timeout'] == 45
+
+
 # ============ guardrails 四道护栏 ============
 def test_guardrails_pass():
     svc = {'whitelist': ['builtin:kill_main_pid(x.service)']}
