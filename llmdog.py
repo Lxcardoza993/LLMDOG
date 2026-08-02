@@ -95,8 +95,10 @@ def probe(svc):
     body = p.get('body')
     data = body.encode() if body else None
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    # timeout 可按服务覆盖(默认 10s):grok2api chat 冷解 clearance 健康也要 ~11s+,
+    # 硬编码 10s 会把"慢但健康"误判成失败(2026-08-03 grok2api 入列教训)
     try:
-        resp = urllib.request.urlopen(req, timeout=10)
+        resp = urllib.request.urlopen(req, timeout=int(p.get('timeout', 10)))
         status = resp.getcode()
         text = resp.read().decode(errors='replace')[:2000]
     except urllib.error.HTTPError as e:
