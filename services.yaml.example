@@ -97,3 +97,24 @@ services:
   #   whitelist: []
   #   rollback: []
   #   known_issues: []
+
+  # ============ 示例5: 整机负载告警(2026-08-06 resin探活死循环烧5.4核实案) ============
+  # 存活类检查(容器在跑/订阅可达/导出新鲜)看不见"容器活着但发疯"——死循环空转只烧CPU
+  # 不触发任何存活信号。此检查兜底:整机负载>2x核数持续~10分钟即TG告警。
+  # - name: host_cpu_load
+  #   probe:
+  #     cmd: "awk -v l=\"$(cut -d' ' -f1 /proc/loadavg)\" -v c=\"$(nproc)\" 'BEGIN { exit (l > c * 2.0) }'"
+  #   fail_threshold: 3        # 3连败(≈10分钟持续过载)才报,防瞬时抖动误报
+  #   cooldown_min: 15
+  #   mode: alert              # 只告警:跑飞的容器/进程需人工判断,LLM擅自重启有风险
+  #   diagnostics:
+  #     - "docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'"
+  #     - "ps -eo pid,pcpu,pmem,comm --sort=-pcpu | head -15"
+  #     - "uptime; cat /proc/pressure/cpu"
+  #   whitelist: []
+  #   rollback: []
+  #   known_issues:
+  #     - name: "resin探活死循环烧CPU(08-06实案)"
+  #       symptom: "负载持续>2x核数;resin容器CPU 300-500%;容器存活探活全绿"
+  #       root_cause: "死节点探活无退避,goroutine并发把CPU打满——存活类检查看不见"
+  #       fix_action: "docker restart resin"
