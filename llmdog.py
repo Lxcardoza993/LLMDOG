@@ -52,6 +52,7 @@ LLM_KEY       = os.environ.get('LLMDOG_LLM_KEY', '')  # 从 config.env 读,默�
 LLM_MODEL     = os.environ.get('LLMDOG_LLM_MODEL', 'deepseek-v4-pro')
 TG_BOT        = os.environ.get('LLMDOG_TG_BOT_TOKEN', '')
 TG_CHAT       = os.environ.get('LLMDOG_TG_CHAT_ID', '')
+TG_THREAD     = os.environ.get('LLMDOG_TG_THREAD_ID', '')  # 可选:发到 DM 的指定 topic(如"搞七捻三")
 
 os.makedirs(STATE_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -401,7 +402,10 @@ def notify(msg):
         try:
             opener = urllib.request.build_opener(
                 urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
-            data = json.dumps({'chat_id': TG_CHAT, 'text': msg[:4000]}).encode()
+            payload = {'chat_id': TG_CHAT, 'text': msg[:4000]}
+            if TG_THREAD:
+                payload['message_thread_id'] = int(TG_THREAD)
+            data = json.dumps(payload).encode()
             req = urllib.request.Request(
                 f'https://api.telegram.org/bot{TG_BOT}/sendMessage',
                 data=data, headers={'Content-Type': 'application/json'}, method='POST')
