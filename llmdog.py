@@ -98,8 +98,17 @@ def probe(svc):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     # timeout 可按服务覆盖(默认 10s):grok2api chat 冷解 clearance 健康也要 ~11s+,
     # 硬编码 10s 会把"慢但健康"误判成失败(2026-08-03 grok2api 入列教训)
+    # proxy 可按服务覆盖:默认直连(localhost 探活);境外 HTTPS 探活须经 clash 8899,
+    # 否则被墙超时→永久假死(2026-09-13 lynxtg 教训:workers.dev 直连 TLS 握手不通)
+    proxy = p.get('proxy')
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
+        _open = opener.open
+    else:
+        _open = urllib.request.urlopen
     try:
-        resp = urllib.request.urlopen(req, timeout=int(p.get('timeout', 10)))
+        resp = _open(req, timeout=int(p.get('timeout', 10)))
         status = resp.getcode()
         text = resp.read().decode(errors='replace')[:2000]
     except urllib.error.HTTPError as e:
@@ -435,7 +444,8 @@ def load_services():
         l = learned.get(name, {}) or {}
         svc['known_issues'] = svc.get('known_issues', []) + l.get('known_issues', [])
         svc['whitelist'] = svc.get('whitelist', []) + l.get('whitelist', [])
-    return base
+    # enabled: false → 整条摘除(服务已退役/有意停机,勿再探活告警)
+    return [svc for svc in base if svc.get('enabled', True)]
 
 # ---------- bug 学习 ----------
 def _bug_sig(service, root_cause):
